@@ -1,11 +1,8 @@
 import { LoggerService } from '@application/services/logger.service';
 import { ProfileService } from '@application/services/profile.service';
-import { PROFILE_MODEL_PROVIDER } from '@constants';
 import { ProfileDomainService } from '@domain/services/profile-domain.service';
 import { faker } from '@faker-js/faker';
 import { ProfileRepository } from '@infrastructure/repository/profile.repository';
-import { Test } from '@nestjs/testing';
-import { TestingModule } from '@nestjs/testing/testing-module';
 import { cloneDeep } from 'lodash';
 
 describe('User Service', () => {
@@ -41,28 +38,14 @@ describe('User Service', () => {
       exec: jest.fn().mockResolvedValue({}),
     });
 
-    const userProviders = {
-      provide: PROFILE_MODEL_PROVIDER,
-      useValue: MockProfileModel,
-    };
-
-    const module: TestingModule = await Test
-      .createTestingModule({
-        providers: [
-          ProfileService,
-          userProviders,
-          ProfileRepository,
-          {
-            provide: 'IProfileRepository',
-            useClass: ProfileRepository,
-          },
-          LoggerService,
-          ProfileDomainService,
-        ],
-      })
-      .compile();
-
-    service = module.get<ProfileService>(ProfileService);
+    // Inherited defect, preserved on purpose: the spec supplies the profile
+    // model and nothing else, exactly as it supplied only ProfileModelProvider
+    // to the testing module. Do not add the missing argument.
+    service = new ProfileService(
+      new ProfileRepository(MockProfileModel),
+      new LoggerService(),
+      new ProfileDomainService(),
+    );
   });
 
   it('should create a user', async () => {

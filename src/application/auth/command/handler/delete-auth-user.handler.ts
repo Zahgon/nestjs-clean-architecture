@@ -4,17 +4,14 @@ import { IAuthRepository } from '@domain/interfaces/repositories/auth-repository
 import { IProfileRepository } from '@domain/interfaces/repositories/profile-repository.interface';
 import { LoggerService } from '@application/services/logger.service';
 import { AuthDomainService } from '@domain/services/auth-domain.service';
-import { Inject } from '@nestjs/common';
-import { CommandHandler, EventBus, ICommandHandler } from '@nestjs/cqrs';
+import { EventBus } from '@application/cqrs/event-bus';
+import { ICommandHandler } from '@application/cqrs/command-bus';
 
-@CommandHandler(DeleteAuthUserCommand)
 export class DeleteAuthUserHandler
   implements ICommandHandler<DeleteAuthUserCommand>
 {
   constructor(
-    @Inject('IAuthRepository')
     private readonly authRepository: IAuthRepository,
-    @Inject('IProfileRepository')
     private readonly profileRepository: IProfileRepository,
     private readonly eventBus: EventBus,
     private readonly logger: LoggerService,
@@ -48,6 +45,6 @@ export class DeleteAuthUserHandler
       context,
     );
 
-    await this.eventBus.publish(new AuthUserDeletedEvent(authId, profileId));
+    this.eventBus.publish(new AuthUserDeletedEvent(authId, profileId));
   }
 }

@@ -1,12 +1,12 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { AppModule } from '../src/app.module';
-import * as request from 'supertest';
+import { createApp } from '../src/api/server';
+import { CompositionRoot } from '../src/composition-root';
+import request from 'supertest';
 import { faker } from '@faker-js/faker';
-import { INestApplication, VersioningType } from '@nestjs/common';
+import { Express } from 'express';
 
 describe('App (e2e)', () => {
-  let app: INestApplication;
-  let moduleFixture: TestingModule;
+  let app: Express;
+  let root: CompositionRoot;
   let accessToken: string;
   let isDbConnected = false;
 
@@ -20,24 +20,14 @@ describe('App (e2e)', () => {
 
   beforeAll(async () => {
     try {
-      moduleFixture = await Test.createTestingModule({
-        imports: [AppModule],
-      }).compile();
-
-      app = moduleFixture.createNestApplication();
+      root = await CompositionRoot.create();
 
       // Configure the app the same way as in main.ts
-      app.setGlobalPrefix('api');
-      app.enableVersioning({
-        type: VersioningType.URI,
-        defaultVersion: '1',
-      });
-
-      await app.init();
+      app = createApp(root);
 
       try {
         // Test database connectivity by trying to register a user
-        const registerResponse = await request(app.getHttpServer())
+        const registerResponse = await request(app)
           .post('/api/v1/auth/register')
           .send(testUser);
 
@@ -46,7 +36,7 @@ describe('App (e2e)', () => {
         }
 
         // Test login functionality
-        const loginResponse = await request(app.getHttpServer())
+        const loginResponse = await request(app)
           .post('/api/v1/auth/login')
           .send({
             email: testUser.email,
@@ -76,25 +66,9 @@ describe('App (e2e)', () => {
 
   afterAll(async () => {
     try {
-      // Close database connections
-      if (app) {
-        try {
-          // Try to get MongoDB connection using the correct token and close it
-          const mongoConnection = app.get('DbConnectionToken', { strict: false });
-          if (mongoConnection && mongoConnection.connection) {
-            await mongoConnection.connection.close();
-          }
-        } catch (_error) {
-          // Ignore if connection doesn't exist
-        }
-
-        // Close the NestJS application
-        await app.close();
-      }
-
-      // Close the testing module
-      if (moduleFixture) {
-        await moduleFixture.close();
+      // Close the mongoose connection the composition root opened
+      if (root) {
+        await root.connection.connection.close();
       }
     } catch (error) {
       console.warn('Error during cleanup:', error.message);
@@ -125,7 +99,7 @@ describe('App (e2e)', () => {
         password: 'newPassword123'
       };
 
-      return request(app.getHttpServer())
+      return request(app)
         .post('/api/v1/auth/register')
         .send(newUser)
         .expect(201)
@@ -141,7 +115,7 @@ describe('App (e2e)', () => {
         return;
       }
 
-      return request(app.getHttpServer())
+      return request(app)
         .post('/api/v1/auth/login')
         .send({
           email: testUser.email,
@@ -156,7 +130,7 @@ describe('App (e2e)', () => {
 
   describe('Protected Routes', () => {
     it('/api/v1/hello (GET) - should return hello message', async () => {
-      return request(app.getHttpServer())
+      return request(app)
         .get('/api/v1/hello')
         .expect(200)
         .expect((res) => {
@@ -170,7 +144,7 @@ describe('App (e2e)', () => {
         return;
       }
 
-      return request(app.getHttpServer())
+      return request(app)
         .get('/api/v1/profile/all')
         .set('Authorization', `Bearer ${accessToken}`)
         .expect(200)
@@ -189,7 +163,7 @@ describe('App (e2e)', () => {
         name: 'Updated Name'
       };
 
-      return request(app.getHttpServer())
+      return request(app)
         .put('/api/v1/profile/me')
         .set('Authorization', `Bearer ${accessToken}`)
         .send(updateData)
@@ -212,7 +186,7 @@ describe('App (e2e)', () => {
         age: faker.number.int({ min: 18, max: 80 }),
       };
 
-      return request(app.getHttpServer())
+      return request(app)
         .post('/api/v1/profile')
         .set('Authorization', `Bearer ${accessToken}`)
         .send(profileData)
@@ -230,19 +204,19 @@ describe('App (e2e)', () => {
 
   describe('Unauthorized Access', () => {
     it('/api/v1/hello (GET) - should return 200 (public endpoint)', () => {
-      return request(app.getHttpServer())
+      return request(app)
         .get('/api/v1/hello')
         .expect(200);
     });
 
     it('/api/v1/profile/all (GET) - should return 401 without token', () => {
-      return request(app.getHttpServer())
+      return request(app)
         .get('/api/v1/profile/all')
         .expect(401);
     });
 
     it('/api/v1/profile (POST) - should return 401 without token', () => {
-      return request(app.getHttpServer())
+      return request(app)
         .post('/api/v1/profile')
         .send({
           id: faker.string.uuid(),

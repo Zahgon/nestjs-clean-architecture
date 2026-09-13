@@ -1,5 +1,3 @@
-import { Injectable } from '@nestjs/common';
-import { Request } from 'express';
 import {
   SuccessResponseDto,
   ErrorResponseDto,
@@ -8,7 +6,32 @@ import {
   ApiResponse,
 } from '@api/dto/common/api-response.dto';
 
-@Injectable()
+/**
+ * The slice of a request this layer needs. Structural on purpose: the
+ * application layer stays free of express while an express `Request` still
+ * satisfies it.
+ */
+export interface RequestContext {
+  path: string;
+  method: string;
+  originalUrl?: string;
+}
+
+/**
+ * Inside a mounted router express rewrites `req.url`, so `req.path` is relative
+ * to the mount point. `originalUrl` is the client-visible path; the query
+ * string is cut because the envelope never carried it.
+ */
+const requestPath = (req: RequestContext): string => {
+  if (typeof req.originalUrl !== 'string') {
+    return req.path;
+  }
+  const queryStart = req.originalUrl.indexOf('?');
+  return queryStart === -1
+    ? req.originalUrl
+    : req.originalUrl.slice(0, queryStart);
+};
+
 export class ResponseService {
   /**
    * Create a successful response
@@ -50,8 +73,8 @@ export class ResponseService {
   /**
    * Create response with request context
    */
-  withRequest<T>(response: ApiResponse<T>, req: Request): ApiResponse<T> {
-    response.path = req.path;
+  withRequest<T>(response: ApiResponse<T>, req: RequestContext): ApiResponse<T> {
+    response.path = requestPath(req);
     response.method = req.method;
     return response;
   }

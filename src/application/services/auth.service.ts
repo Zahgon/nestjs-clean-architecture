@@ -1,25 +1,20 @@
-import {
-  Inject,
-  Injectable,
-  NotFoundException,
-  UnauthorizedException,
-} from '@nestjs/common';
-import { CommandBus } from '@nestjs/cqrs';
-import { JwtService } from '@nestjs/jwt';
 import axios from 'axios';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
+import jwt from 'jsonwebtoken';
 
+import { CommandBus } from '@application/cqrs/command-bus';
+import { ApiError } from '@application/errors/api-error';
 import { CreateAuthUserCommand } from '@application/auth/command/create-auth-user.command';
 import { DeleteAuthUserCommand } from '@application/auth/command/delete-auth-user.command';
+import { GoogleStrategy } from '@application/auth/google.strategy';
 import { LoginAuthDto } from '@api/dto/auth/login-auth.dto';
 import { RegisterAuthDto } from '@api/dto/auth/register-auth.dto';
 import {
-  GOOGLE_CALLBACK_URL,
-  GOOGLE_CLIENT_ID,
-  GOOGLE_CLIENT_SECRET,
+  JWT_EXPIRATION_TIME,
   JWT_REFRESH_SECRET,
   JWT_REFRESH_EXPIRATION_TIME,
+  JWT_SECRET,
 } from '@constants';
 import { AuthUser } from '@domain/entities/Auth';
 import { Role } from '@domain/entities/enums/role.enum';
@@ -29,18 +24,15 @@ import { AuthDomainService } from '@domain/services/auth-domain.service';
 import { LoggerService } from '@application/services/logger.service';
 import { ProfileDomainService } from '@domain/services/profile-domain.service';
 
-@Injectable()
 export class AuthService {
   constructor(
     private readonly commandBus: CommandBus,
-    @Inject('IAuthRepository')
     private readonly authRepository: IAuthRepository,
-    @Inject('IProfileRepository')
     private readonly profileRepository: IProfileRepository,
-    private readonly jwtService: JwtService,
     private readonly logger: LoggerService,
     private readonly authDomainService: AuthDomainService,
     private readonly profileDomainService: ProfileDomainService,
+    private readonly googleStrategy: GoogleStrategy,
   ) {}
 
   async register(registerDto: RegisterAuthDto): Promise<{
@@ -127,18 +119,18 @@ export class AuthService {
     this.logger.logger(`Attempting to log in user ${email}.`, context);
 
     if (!this.authDomainService.isEmailValid(email)) {
-      throw new UnauthorizedException('Invalid email format');
+      throw new ApiError(401, 'Invalid email format');
     }
 
     const auth = await this.authRepository.findByEmail(loginDto.email, true);
 
     if (!auth) {
       this.logger.logger(`User ${email} not found.`, context);
-      throw new NotFoundException('User not found');
+      throw new ApiError(404, 'User not found');
     }
     if (!(await bcrypt.compare(password, auth.password))) {
       this.logger.warning(`Failed login attempt for user ${email}.`, context);
-      throw new UnauthorizedException('Invalid credentials');
+      throw new ApiError(401, 'Invalid credentials');
     }
 
     await this.authRepository.update(auth.id, {
@@ -185,13 +177,13 @@ export class AuthService {
 
     const auth = await this.authRepository.findById(userId, true);
     if (!auth) {
-      throw new NotFoundException('User not found');
+      throw new ApiError(404, 'User not found');
     }
 
     // Verify old password
     const isOldPasswordValid = await bcrypt.compare(oldPassword, auth.password);
     if (!isOldPasswordValid) {
-      throw new UnauthorizedException('Old password is incorrect');
+      throw new ApiError(401, 'Old password is incorrect');
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
@@ -221,18 +213,18 @@ export class AuthService {
 
     try {
       // Verify refresh token
-      const payload = this.jwtService.verify(refreshToken, {
-        secret: JWT_REFRESH_SECRET,
-      });
+      const payload = jwt.verify(refreshToken, JWT_REFRESH_SECRET) as {
+        sub: string;
+      };
 
       const auth = await this.authRepository.findById(payload.sub);
       if (!auth) {
-        throw new UnauthorizedException('User not found');
+        throw new ApiError(401, 'User not found');
       }
 
       // Check if refresh token is still valid in database
       if (!auth.currentHashedRefreshToken) {
-        throw new UnauthorizedException('Refresh token revoked');
+        throw new ApiError(401, 'Refresh token revoked');
       }
 
       const isRefreshTokenValid = await bcrypt.compare(
@@ -241,7 +233,7 @@ export class AuthService {
       );
 
       if (!isRefreshTokenValid) {
-        throw new UnauthorizedException('Invalid refresh token');
+        throw new ApiError(401, 'Invalid refresh token');
       }
 
       // Generate new tokens
@@ -262,22 +254,19 @@ export class AuthService {
       };
     } catch (error) {
       this.logger.logger(`Token refresh failed: ${error.message}`, context);
-      throw new UnauthorizedException('Invalid refresh token');
+      throw new ApiError(401, 'Invalid refresh token');
     }
   }
 
   private async generateTokens(auth: AuthUser) {
     const payload = { email: auth.email, sub: auth.id, roles: auth.role };
 
-    const [accessToken, refreshToken] = await Promise.all([
-      this.jwtService.signAsync(payload, {
-        expiresIn: '1h', // Access token expires in 1 hour
-      }),
-      this.jwtService.signAsync(payload, {
-        secret: JWT_REFRESH_SECRET,
-        expiresIn: JWT_REFRESH_EXPIRATION_TIME, // Refresh token expires in 7 days
-      }),
-    ]);
+    const accessToken = jwt.sign(payload, JWT_SECRET, {
+      expiresIn: '1h', // Access token expires in 1 hour
+    });
+    const refreshToken = jwt.sign(payload, JWT_REFRESH_SECRET, {
+      expiresIn: JWT_REFRESH_EXPIRATION_TIME, // Refresh token expires in 7 days
+    });
 
     return { accessToken, refreshToken };
   }
@@ -298,8 +287,8 @@ export class AuthService {
     const state = crypto.randomBytes(20).toString('hex');
     const redirectUrl =
       'https://accounts.google.com/o/oauth2/v2/auth?' +
-      `client_id=${GOOGLE_CLIENT_ID}` +
-      `&redirect_uri=${encodeURIComponent(GOOGLE_CALLBACK_URL)}` +
+      `client_id=${this.googleStrategy.clientID}` +
+      `&redirect_uri=${encodeURIComponent(this.googleStrategy.callbackURL)}` +
       '&response_type=code' +
       '&scope=openid%20email%20profile' +
       '&access_type=offline' +
@@ -317,16 +306,16 @@ export class AuthService {
         module: 'AuthService',
         method: 'handleGoogleRedirect',
       });
-      throw new UnauthorizedException('Invalid state or state mismatch.');
+      throw new ApiError(401, 'Invalid state or state mismatch.');
     }
 
     const tokenResponse = await axios.post(
       'https://oauth2.googleapis.com/token',
       {
         code,
-        client_id: GOOGLE_CLIENT_ID,
-        client_secret: GOOGLE_CLIENT_SECRET,
-        redirect_uri: GOOGLE_CALLBACK_URL,
+        client_id: this.googleStrategy.clientID,
+        client_secret: this.googleStrategy.clientSecret,
+        redirect_uri: this.googleStrategy.callbackURL,
         grant_type: 'authorization_code',
       },
       {
@@ -343,7 +332,7 @@ export class AuthService {
     );
     const user = userInfoResponse.data;
 
-    const jwt = await this.findOrCreateGoogleUser({
+    const googleJwt = await this.findOrCreateGoogleUser({
       googleId: user.sub,
       email: user.email,
       firstName: user.given_name,
@@ -355,7 +344,7 @@ export class AuthService {
       module: 'AuthService',
       method: 'findOrCreateGoogleUser',
     });
-    return { access_token: jwt };
+    return { access_token: googleJwt };
   }
 
   async findOrCreateGoogleUser(profile: any) {
@@ -405,7 +394,7 @@ export class AuthService {
     }
 
     const payload = { email: auth.email, sub: auth.id, roles: auth.role };
-    return this.jwtService.sign(payload);
+    return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRATION_TIME });
   }
 
   async deleteByAuthId(authId: string): Promise<{ message: string }> {
@@ -415,7 +404,7 @@ export class AuthService {
         module: 'AuthService',
         method: 'deleteByAuthId',
       });
-      throw new NotFoundException('Auth user not found');
+      throw new ApiError(404, 'Auth user not found');
     }
 
     const profile = await this.profileRepository.findByAuthId(auth.id);
@@ -424,7 +413,7 @@ export class AuthService {
         module: 'AuthService',
         method: 'deleteByAuthId',
       });
-      throw new NotFoundException('Profile not found');
+      throw new ApiError(404, 'Profile not found');
     }
 
     await this.commandBus.execute(

@@ -1,107 +1,114 @@
-import { SuccessResponseDto } from '@api/dto/common/api-response.dto';
+import { Request, RequestHandler, Response, Router } from 'express';
 import { CreateProfileDto } from '@api/dto/create-profile.dto';
 import { UpdateProfileDto } from '@api/dto/update-profile.dto';
-import { Roles } from '@application/auth/decorators/roles.decorator';
-import { RolesGuard } from '@application/auth/guards/roles.guard';
-import { CurrentUserId } from '@application/decorators/current-user.decorator';
-import { LoggingInterceptor } from '@application/interceptors/logging.interceptor';
+import { executionTimeMiddleware } from '@api/middleware/execution-time.middleware';
+import { requireRoles } from '@api/middleware/roles.middleware';
+import { validateBody } from '@api/middleware/validate-body.middleware';
+import { ResponseEnvelope } from '@api/response-envelope';
+import { ApiError } from '@application/errors/api-error';
 import { ProfileService } from '@application/services/profile.service';
 import { ResponseService } from '@application/services/response.service';
 import { Role } from '@domain/entities/enums/role.enum';
-import { Profile } from '@domain/entities/Profile';
-import {
-  BadRequestException,
-  Body,
-  Controller,
-  Get,
-  NotFoundException,
-  Param,
-  Post,
-  Put,
-  UseGuards,
-  UseInterceptors,
-} from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiResponse,
-  ApiTags,
-} from '@nestjs/swagger';
 
-@ApiTags('profile')
-@ApiBearerAuth()
-@UseGuards(AuthGuard('jwt'))
-@Controller({
-  path: 'profile',
-  version: '1',
-})
-@UseInterceptors(LoggingInterceptor)
 export class ProfileController {
+  readonly router: Router = Router();
+
   constructor(
     private readonly profileService: ProfileService,
     private readonly responseService: ResponseService,
-  ) { }
+    private readonly envelope: ResponseEnvelope,
+    scoped: RequestHandler[],
+    jwtAuth: RequestHandler,
+  ) {
+    const { router } = this;
+    router.use(executionTimeMiddleware);
 
-  @Roles(Role.ADMIN)
-  @UseGuards(RolesGuard)
-  @Get('all')
-  @ApiOperation({ summary: 'Get all users' })
-  @ApiResponse({ status: 200, description: 'Returns all users', type: [Profile] })
-  async getAll(): Promise<SuccessResponseDto<Profile[]>> {
+    // 'all' and 'admins' are literal paths and must be declared before ':id',
+    // which would otherwise match them and answer from the wrong handler.
+    router.get('/all', ...scoped, jwtAuth, requireRoles(Role.ADMIN), this.getAll);
+    router.get(
+      '/admins',
+      ...scoped,
+      jwtAuth,
+      requireRoles(Role.ADMIN),
+      this.getAdmins,
+    );
+    router.post(
+      '/',
+      ...scoped,
+      jwtAuth,
+      validateBody(CreateProfileDto),
+      this.create,
+    );
+    router.get('/:id', ...scoped, jwtAuth, this.getProfile);
+    router.put(
+      '/me',
+      ...scoped,
+      jwtAuth,
+      validateBody(UpdateProfileDto),
+      this.updateMyProfile,
+    );
+  }
+
+  private getAll = async (req: Request, res: Response): Promise<void> => {
     const profiles = await this.profileService.find();
-    return this.responseService.retrieved(profiles, 'All profiles retrieved successfully');
-  }
+    const body = this.responseService.retrieved(
+      profiles,
+      'All profiles retrieved successfully',
+    );
+    res.status(200).json(this.envelope.wrap(body, req));
+  };
 
-  @Roles(Role.ADMIN)
-  @UseGuards(RolesGuard)
-  @Get('admins')
-  @ApiOperation({ summary: 'Get all admin users' })
-  @ApiResponse({ status: 200, description: 'Returns all admin users', type: [Profile] })
-  async getAdmins(): Promise<SuccessResponseDto<Profile[]>> {
+  private getAdmins = async (req: Request, res: Response): Promise<void> => {
     const admins = await this.profileService.findByRole(Role.ADMIN);
-    return this.responseService.retrieved(admins, 'Admin profiles retrieved successfully');
-  }
+    const body = this.responseService.retrieved(
+      admins,
+      'Admin profiles retrieved successfully',
+    );
+    res.status(200).json(this.envelope.wrap(body, req));
+  };
 
-  @Post('')
-  @ApiOperation({ summary: 'Create a new user' })
-  @ApiResponse({
-    status: 201,
-    description: 'The user has been successfully created',
-    type: Profile,
-  })
-  async create(@Body() profile: CreateProfileDto): Promise<SuccessResponseDto<Profile>> {
-    const newProfile = await this.profileService.create(profile);
-    return this.responseService.created(newProfile, 'Profile created successfully');
-  }
+  private create = async (req: Request, res: Response): Promise<void> => {
+    const newProfile = await this.profileService.create(
+      req.body as CreateProfileDto,
+    );
+    const body = this.responseService.created(
+      newProfile,
+      'Profile created successfully',
+    );
+    res.status(201).json(this.envelope.wrap(body, req));
+  };
 
-  @Get(':id')
-  @ApiOperation({ summary: 'Get user profile' })
-  @ApiResponse({ status: 200, description: 'Returns user profile.' })
-  @ApiResponse({ status: 404, description: 'Profile not found.' })
-  @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  async getProfile(@Param('id') id: string) {
+  private getProfile = async (req: Request, res: Response): Promise<void> => {
+    const { id } = req.params;
     if (!id) {
-      throw new BadRequestException('Profile id is required');
+      throw new ApiError(400, 'Profile id is required');
     }
 
     const profile = await this.profileService.findById(id);
     if (!profile) {
-      throw new NotFoundException('Profile not found');
+      throw new ApiError(404, 'Profile not found');
     }
 
-    return this.responseService.retrieved(profile, 'Profile retrieved successfully');
-  }
+    const body = this.responseService.retrieved(
+      profile,
+      'Profile retrieved successfully',
+    );
+    res.status(200).json(this.envelope.wrap(body, req));
+  };
 
-  @Put('me')
-  @ApiOperation({ summary: 'Update my profile' })
-  @ApiResponse({ status: 200, description: 'Profile updated successfully', type: Profile })
-  @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  async updateMyProfile(
-    @Body() updates: UpdateProfileDto,
-    @CurrentUserId() requestingUserId: string,
-  ): Promise<SuccessResponseDto<Profile>> {
-    const updatedProfile = await this.profileService.updateMyProfile(updates, requestingUserId);
-    return this.responseService.updated(updatedProfile, 'Profile updated successfully');
-  }
+  private updateMyProfile = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    const updatedProfile = await this.profileService.updateMyProfile(
+      req.body as UpdateProfileDto,
+      req.user.id,
+    );
+    const body = this.responseService.updated(
+      updatedProfile,
+      'Profile updated successfully',
+    );
+    res.status(200).json(this.envelope.wrap(body, req));
+  };
 }

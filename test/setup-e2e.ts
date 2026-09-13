@@ -8,7 +8,7 @@ process.env.JWT_REFRESH_SECRET = 'test-jwt-refresh-secret';
 process.env.JWT_REFRESH_EXPIRATION_TIME = '7d';
 
 // Required encryption keys for email handling
-process.env.EMAIL_ENCRYPTION_KEY = 'test-encryption-key-32-characters-long';
+process.env.EMAIL_ENCRYPTION_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 process.env.EMAIL_BLIND_INDEX_SECRET = 'test-blind-index-secret-32-chars';
 
 // Increase timeout for all tests

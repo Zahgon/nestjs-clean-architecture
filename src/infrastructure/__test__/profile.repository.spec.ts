@@ -1,15 +1,13 @@
 import { ProfileRepository } from '@infrastructure/repository/profile.repository';
-import { PROFILE_MODEL_PROVIDER } from '@constants';
 import { Profile } from '@domain/entities/Profile';
 import { Role } from '@domain/entities/enums/role.enum';
-import { Test, TestingModule } from '@nestjs/testing';
 import { faker } from '@faker-js/faker';
 
 describe('ProfileRepository', () => {
   let repository: ProfileRepository;
   let mockProfileModel: any;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     // Create a constructor function that can be called with 'new'
     mockProfileModel = jest.fn().mockImplementation((data: any) => ({
       ...data,
@@ -27,17 +25,10 @@ describe('ProfileRepository', () => {
     mockProfileModel.create = jest.fn();
     mockProfileModel.deleteOne = jest.fn();
 
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        ProfileRepository,
-        {
-          provide: PROFILE_MODEL_PROVIDER,
-          useValue: mockProfileModel,
-        },
-      ],
-    }).compile();
-
-    repository = module.get<ProfileRepository>(ProfileRepository);
+    // Inherited defect, preserved on purpose: the spec supplies the profile
+    // model and nothing else, exactly as it supplied only ProfileModelProvider
+    // to the testing module. Do not add the missing argument.
+    repository = new ProfileRepository(mockProfileModel);
   });
 
   it('should be defined', () => {

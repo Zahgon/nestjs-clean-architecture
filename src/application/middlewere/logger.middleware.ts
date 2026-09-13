@@ -1,4 +1,3 @@
-import { Injectable, NestMiddleware } from '@nestjs/common';
 import { NODE_ENV } from '@constants';
 import { LoggerService } from '@application/services/logger.service';
 
@@ -6,11 +5,10 @@ const REDACT_KEYS = [/pass/i, /token/i, /auth/i, /secret/i, /^email$/i, /code/i]
 const SKIP_PATHS = new Set<string>(['/', '/health', '/metrics', '/favicon.ico']);
 const SKIP_METHODS = new Set<string>(['OPTIONS', 'HEAD']);
 
-@Injectable()
-export class LoggerMiddleware implements NestMiddleware {
+export class LoggerMiddleware {
   constructor(private readonly loggerService: LoggerService) { }
 
-  use(req: any, res: any, next: any) {
+  use = (req: any, res: any, next: any) => {
     const method: string = req.method;
     const rawUrl: string = req.originalUrl || req.url || '';
     const urlPath: string = rawUrl.split('?')[0];
@@ -77,5 +75,5 @@ export class LoggerMiddleware implements NestMiddleware {
     });
 
     next();
-  }
+  };
 }

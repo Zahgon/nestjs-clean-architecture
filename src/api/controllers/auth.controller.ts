@@ -1,108 +1,149 @@
+import { Request, RequestHandler, Response, Router } from 'express';
+import { ChangePasswordDto } from '@api/dto/auth/change-password.dto';
 import { LoginAuthDto } from '@api/dto/auth/login-auth.dto';
 import { RefreshTokenDto } from '@api/dto/auth/refresh-token.dto';
 import { RegisterAuthDto } from '@api/dto/auth/register-auth.dto';
-import { LoggingInterceptor } from '@application/interceptors/logging.interceptor';
+import { executionTimeMiddleware } from '@api/middleware/execution-time.middleware';
+import { ThrottleFactory } from '@api/middleware/throttle.middleware';
+import { validateBody } from '@api/middleware/validate-body.middleware';
+import { ResponseEnvelope } from '@api/response-envelope';
+import { ApiError } from '@application/errors/api-error';
 import { AuthService } from '@application/services/auth.service';
 import { ResponseService } from '@application/services/response.service';
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  NotFoundException,
-  Param,
-  Post,
-  Query,
-  Req,
-  Request,
-  Res,
-  UseGuards,
-  UseInterceptors,
-} from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiResponse,
-  ApiTags,
-} from '@nestjs/swagger';
-import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
-import { Request as ExpressRequest, Response } from 'express';
-import { CurrentUserId } from '@application/decorators/current-user.decorator';
-import { ChangePasswordDto } from '@api/dto/auth/change-password.dto';
 
-@ApiTags('auth')
-@Controller({
-  path: 'auth',
-  version: '1',
-})
-@UseGuards(ThrottlerGuard)
-@UseInterceptors(LoggingInterceptor)
+const TTL = 60000;
+
 export class AuthController {
+  readonly router: Router = Router();
+
+  /**
+   * @param scoped request id and access logging. Spread per route rather than
+   *   mounted with router.use, so a path this router does not serve reaches the
+   *   404 without picking up an x-request-id header.
+   */
   constructor(
     private readonly authService: AuthService,
     private readonly responseService: ResponseService,
-  ) { }
+    private readonly envelope: ResponseEnvelope,
+    scoped: RequestHandler[],
+    throttle: ThrottleFactory,
+    jwtAuth: RequestHandler,
+  ) {
+    const { router } = this;
+    router.use(executionTimeMiddleware);
 
-  @Throttle({ default: { limit: 5, ttl: 60000 } })
-  @Post('register')
-  @ApiOperation({ summary: 'Register a new user' })
-  @ApiResponse({ status: 201, description: 'User successfully registered.' })
-  @ApiResponse({ status: 400, description: 'Bad Request.' })
-  async register(@Body() registerDto: RegisterAuthDto) {
-    const result = await this.authService.register(registerDto);
-    return this.responseService.created(
-      result,
-      'User registration initiated successfully',
+    router.post(
+      '/register',
+      ...scoped,
+      throttle('auth:register', 5, TTL),
+      validateBody(RegisterAuthDto),
+      this.register,
+    );
+    router.post(
+      '/login',
+      ...scoped,
+      throttle('auth:login', 3, TTL),
+      validateBody(LoginAuthDto),
+      this.login,
+    );
+    router.post(
+      '/logout',
+      ...scoped,
+      throttle('auth:logout', 100, TTL),
+      jwtAuth,
+      this.logout,
+    );
+    router.post(
+      '/change-password',
+      ...scoped,
+      throttle('auth:changePassword', 5, TTL),
+      jwtAuth,
+      validateBody(ChangePasswordDto),
+      this.changePassword,
+    );
+    router.post(
+      '/refresh-token',
+      ...scoped,
+      throttle('auth:refreshToken', 100, TTL),
+      validateBody(RefreshTokenDto),
+      this.refreshToken,
+    );
+
+    // The two literal google paths are declared before ':id' on purpose: the
+    // parameterised route would otherwise swallow /google.
+    router.get(
+      '/google',
+      ...scoped,
+      throttle('auth:googleAuth', 100, TTL),
+      this.googleAuth,
+    );
+    router.get(
+      '/google/redirect',
+      ...scoped,
+      throttle('auth:googleAuthRedirect', 100, TTL),
+      this.googleAuthRedirect,
+    );
+
+    router.get(
+      '/:id',
+      ...scoped,
+      throttle('auth:getProfile', 100, TTL),
+      jwtAuth,
+      this.getProfile,
+    );
+    router.delete(
+      '/:id',
+      ...scoped,
+      throttle('auth:deleteUser', 100, TTL),
+      jwtAuth,
+      this.deleteUser,
     );
   }
 
-  @Throttle({ default: { limit: 3, ttl: 60000 } })
-  @Post('login')
-  @ApiOperation({ summary: 'Log in a user' })
-  @ApiResponse({ status: 200, description: 'User successfully logged in.' })
-  @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  async login(@Body() loginDto: LoginAuthDto) {
-    const result = await this.authService.login(loginDto);
-    return this.responseService.success('Login successful', result);
-  }
+  private register = async (req: Request, res: Response): Promise<void> => {
+    const result = await this.authService.register(req.body as RegisterAuthDto);
+    const body = this.responseService.created(
+      result,
+      'User registration initiated successfully',
+    );
+    res.status(201).json(this.envelope.wrap(body, req));
+  };
 
-  @UseGuards(AuthGuard('jwt'))
-  @Post('logout')
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Log out the current user' })
-  @ApiResponse({ status: 200, description: 'User successfully logged out.' })
-  @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  async logout(@Request() req) {
+  private login = async (req: Request, res: Response): Promise<void> => {
+    const result = await this.authService.login(req.body as LoginAuthDto);
+    const body = this.responseService.success('Login successful', result);
+    res.status(201).json(this.envelope.wrap(body, req));
+  };
+
+  private logout = async (req: Request, res: Response): Promise<void> => {
     const result = await this.authService.logout(req.user.id);
-    return this.responseService.success(result.message);
-  }
+    const body = this.responseService.success(result.message);
+    res.status(201).json(this.envelope.wrap(body, req));
+  };
 
-  @UseGuards(AuthGuard('jwt'))
-  @Throttle({ default: { limit: 5, ttl: 60000 } })
-  @Post('change-password')
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Change password for the current user' })
-  @ApiResponse({ status: 200, description: 'Password changed successfully.' })
-  @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  @ApiResponse({ status: 400, description: 'Bad Request.' })
-  async changePassword(@CurrentUserId() userId: string, @Body() dto: ChangePasswordDto) {
-    const result = await this.authService.changePassword(userId, dto.oldPassword, dto.newPassword);
-    return this.responseService.success(result.message);
-  }
+  private changePassword = async (req: Request, res: Response): Promise<void> => {
+    const dto = req.body as ChangePasswordDto;
+    const result = await this.authService.changePassword(
+      req.user.id,
+      dto.oldPassword,
+      dto.newPassword,
+    );
+    const body = this.responseService.success(result.message);
+    res.status(201).json(this.envelope.wrap(body, req));
+  };
 
-  @Post('refresh-token')
-  @ApiOperation({ summary: 'Refresh access token' })
-  @ApiResponse({ status: 200, description: 'New access token generated.' })
-  @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  async refreshToken(@Body() refreshTokenDto: RefreshTokenDto) {
-    const result = await this.authService.refreshToken(refreshTokenDto.refresh_token);
-    return this.responseService.success('Token refreshed successfully', result);
-  }
+  private refreshToken = async (req: Request, res: Response): Promise<void> => {
+    const dto = req.body as RefreshTokenDto;
+    const result = await this.authService.refreshToken(dto.refresh_token);
+    const body = this.responseService.success(
+      'Token refreshed successfully',
+      result,
+    );
+    res.status(201).json(this.envelope.wrap(body, req));
+  };
 
-  @Get('google')
-  @ApiOperation({ summary: 'Initiate Google OAuth login' })
-  async googleAuth(@Res() res: Response) {
+  /** The one handler that writes its own response and escapes the envelope. */
+  private googleAuth = async (_req: Request, res: Response): Promise<void> => {
     const { redirectUrl, state } = this.authService.initiateGoogleAuth();
     res.cookie('oauth_state', state, {
       httpOnly: true,
@@ -110,16 +151,14 @@ export class AuthController {
       sameSite: 'lax',
     });
     res.redirect(redirectUrl);
-  }
+  };
 
-  @Get('google/redirect')
-  @ApiOperation({ summary: 'Handle Google OAuth callback' })
-  async googleAuthRedirect(
-    @Query('code') code: string,
-    @Query('state') state: string,
-    @Req() req: ExpressRequest,
-    @Res({ passthrough: true }) res: Response,
-  ) {
+  private googleAuthRedirect = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    const code = req.query.code as string;
+    const state = req.query.state as string;
     const storedState = req.cookies['oauth_state'];
     const result = await this.authService.handleGoogleRedirect(
       code,
@@ -130,38 +169,28 @@ export class AuthController {
     // Clear the cookie after use
     res.clearCookie('oauth_state');
 
-    return this.responseService.success(
+    const body = this.responseService.success(
       'Google authentication successful',
       result,
     );
-  }
+    res.status(200).json(this.envelope.wrap(body, req));
+  };
 
-  @UseGuards(AuthGuard('jwt'))
-  @Get(':id')
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get user profile by auth id' })
-  @ApiResponse({ status: 200, description: 'Returns user profile.' })
-  @ApiResponse({ status: 404, description: 'User not found.' })
-  @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  async getProfile(@Param('id') id: string) {
-    const user = await this.authService.findByAuthId(id);
+  private getProfile = async (req: Request, res: Response): Promise<void> => {
+    const user = await this.authService.findByAuthId(req.params.id);
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new ApiError(404, 'User not found');
     }
-    return this.responseService.retrieved(
+    const body = this.responseService.retrieved(
       user,
       'User profile retrieved successfully',
     );
-  }
+    res.status(200).json(this.envelope.wrap(body, req));
+  };
 
-  @UseGuards(AuthGuard('jwt'))
-  @Delete(':id')
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Delete user (auth + profile) by auth id' })
-  @ApiResponse({ status: 200, description: 'User deleted successfully.' })
-  @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  async deleteUser(@Param('id') id: string) {
-    const result = await this.authService.deleteByAuthId(id);
-    return this.responseService.success(result.message);
-  }
+  private deleteUser = async (req: Request, res: Response): Promise<void> => {
+    const result = await this.authService.deleteByAuthId(req.params.id);
+    const body = this.responseService.success(result.message);
+    res.status(200).json(this.envelope.wrap(body, req));
+  };
 }

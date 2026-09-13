@@ -1,13 +1,11 @@
 import { APP_HOST } from '@constants';
-import { Injectable, Logger } from '@nestjs/common';
 
 export class Context {
   module: string;
   method: string;
 }
 
-@Injectable()
-export class LoggerService extends Logger {
+export class LoggerService {
   logger(message: any, context?: Context) {
     const now = new Date();
     const standard = {
@@ -17,7 +15,7 @@ export class LoggerService extends Logger {
       epochMs: now.getTime(),
     };
     const data = { ...standard, ...context, message };
-    super.log(data);
+    console.log(data);
   }
 
   err(message: any, context: Context) {
@@ -29,7 +27,7 @@ export class LoggerService extends Logger {
       epochMs: now.getTime(),
     };
     const data = { ...standard, ...context, message };
-    super.error(data);
+    console.error(data);
   }
 
   warning(message: any, context: Context) {
@@ -41,6 +39,6 @@ export class LoggerService extends Logger {
       epochMs: now.getTime(),
     };
     const data = { ...standard, ...context, message };
-    super.warn(data);
+    console.warn(data);
   }
-} 
+}

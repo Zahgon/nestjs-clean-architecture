@@ -1,15 +1,20 @@
-import { RolesGuard } from '@application/auth/guards/roles.guard';
-import { Reflector } from '@nestjs/core';
-import { ExecutionContext } from '@nestjs/common';
+import { requireRoles } from '@api/middleware/roles.middleware';
+import { ApiError } from '@application/errors/api-error';
 import { Role } from '@domain/entities/enums/role.enum';
+import { NextFunction, Request, RequestHandler, Response } from 'express';
 
+/**
+ * The guard became `requireRoles(...roles)`, a plain middleware the routers
+ * spread into the chains that need it. There is no reflector any more: the
+ * roles a route demands are the arguments it was built with, and "no roles are
+ * required" is not a value the middleware can be handed - it is the middleware
+ * being absent from the chain, which is how the routers express a public route.
+ */
 describe('RolesGuard', () => {
-  let guard: RolesGuard;
-  let reflector: Reflector;
+  let guard: RequestHandler;
 
   beforeEach(() => {
-    reflector = new Reflector();
-    guard = new RolesGuard(reflector);
+    guard = requireRoles(Role.ADMIN);
   });
 
   it('should be defined', () => {
@@ -17,90 +22,84 @@ describe('RolesGuard', () => {
   });
 
   it('should allow access when no roles are required', () => {
-    const mockContext = createMockExecutionContext({});
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(null);
+    const mockContext = createMockRequest({});
 
-    const result = guard.canActivate(mockContext);
+    const result = canActivate(null, mockContext);
 
     expect(result).toBe(true);
   });
 
   it('should allow access when user has required role', () => {
-    const mockContext = createMockExecutionContext({
+    const mockContext = createMockRequest({
       user: { roles: [Role.ADMIN] }
     });
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue([Role.ADMIN]);
 
-    const result = guard.canActivate(mockContext);
+    const result = canActivate([Role.ADMIN], mockContext);
 
     expect(result).toBe(true);
   });
 
   it('should deny access when user does not have required role', () => {
-    const mockContext = createMockExecutionContext({
+    const mockContext = createMockRequest({
       user: { roles: [Role.USER] }
     });
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue([Role.ADMIN]);
 
-    const result = guard.canActivate(mockContext);
+    const result = canActivate([Role.ADMIN], mockContext);
 
     expect(result).toBe(false);
   });
 
   it('should allow access when user has one of multiple required roles', () => {
-    const mockContext = createMockExecutionContext({
+    const mockContext = createMockRequest({
       user: { roles: [Role.USER, Role.ADMIN] }
     });
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue([Role.ADMIN, Role.USER]);
 
-    const result = guard.canActivate(mockContext);
+    const result = canActivate([Role.ADMIN, Role.USER], mockContext);
 
     expect(result).toBe(true);
   });
 
   it('should deny access when user has no roles', () => {
-    const mockContext = createMockExecutionContext({
+    const mockContext = createMockRequest({
       user: { roles: [] }
     });
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue([Role.ADMIN]);
 
-    const result = guard.canActivate(mockContext);
+    const result = canActivate([Role.ADMIN], mockContext);
 
     expect(result).toBe(false);
   });
 
   it('should deny access when user roles is undefined', () => {
-    const mockContext = createMockExecutionContext({
+    const mockContext = createMockRequest({
       user: {}
     });
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue([Role.ADMIN]);
 
-    const result = guard.canActivate(mockContext);
+    const result = canActivate([Role.ADMIN], mockContext);
 
     expect(result).toBe(false);
   });
 
-  function createMockExecutionContext(request: any): ExecutionContext {
-    return {
-      switchToHttp: () => ({
-        getRequest: () => request,
-        getResponse: () => ({} as any),
-        getNext: () => jest.fn() as any,
-      }),
-      getHandler: () => jest.fn(),
-      getClass: () => jest.fn(),
-      getArgs: () => [] as any,
-      getArgByIndex: () => ({} as any),
-      switchToRpc: () => ({
-        getContext: () => ({} as any),
-        getData: () => ({} as any),
-      }),
-      switchToWs: () => ({
-        getClient: () => ({} as any),
-        getData: () => ({} as any),
-        getPattern: () => 'test-pattern',
-      }),
-      getType: () => 'http' as any,
+  function createMockRequest(request: { user?: { roles?: Role[] } }): Request {
+    return request as Request;
+  }
+
+  /**
+   * Runs exactly what a router runs for a route declaring `requiredRoles`:
+   * nothing at all when there are none, and otherwise the real middleware,
+   * which signals refusal by handing a 403 ApiError to next().
+   */
+  function canActivate(requiredRoles: Role[] | null, req: Request): boolean {
+    if (!requiredRoles) {
+      return true;
+    }
+
+    let refusal: unknown;
+    const next: NextFunction = (error?: unknown) => {
+      refusal = error;
     };
+
+    requireRoles(...requiredRoles)(req, {} as Response, next);
+
+    return !(refusal instanceof ApiError);
   }
 });

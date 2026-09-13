@@ -1,17 +1,14 @@
-import { AUTH_MODEL_PROVIDER, PROFILE_MODEL_PROVIDER } from '@constants';
 import { Profile } from '@domain/entities/Profile';
 import { Role } from '@domain/entities/enums/role.enum';
 import { IProfileRepository } from '@domain/interfaces/repositories/profile-repository.interface';
 import { Profile as ProfileModel } from '@infrastructure/models/profile.model';
 import { Auth } from '@infrastructure/models/auth.model';
-import { Inject, Injectable } from '@nestjs/common';
 import { Model } from 'mongoose';
 
-@Injectable()
 export class ProfileRepository implements IProfileRepository {
   constructor(
-    @Inject(PROFILE_MODEL_PROVIDER) private readonly profileModel: Model<ProfileModel>,
-    @Inject(AUTH_MODEL_PROVIDER) private readonly authModel: Model<Auth>,
+    private readonly profileModel: Model<ProfileModel>,
+    private readonly authModel: Model<Auth>,
   ) {}
 
   async create(profile: Partial<Profile>): Promise<Profile> {
@@ -59,11 +56,11 @@ export class ProfileRepository implements IProfileRepository {
       { $set: profileData },
       { new: true }
     ).exec();
-    
+
     if (!updatedProfile) {
       throw new Error('Profile not found');
     }
-    
+
     return updatedProfile.toObject() as Profile;
   }
 

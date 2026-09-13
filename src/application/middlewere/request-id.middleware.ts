@@ -1,9 +1,7 @@
-import { Injectable, NestMiddleware } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 
-@Injectable()
-export class RequestIdMiddleware implements NestMiddleware {
-  use(req: any, res: any, next: any) {
+export class RequestIdMiddleware {
+  use = (req: any, res: any, next: any) => {
     const incomingId =
       req.headers['x-request-id'] ||
       req.headers['x-correlation-id'] ||
@@ -16,5 +14,5 @@ export class RequestIdMiddleware implements NestMiddleware {
     res.setHeader('x-request-id', requestId);
 
     next();
-  }
+  };
 }

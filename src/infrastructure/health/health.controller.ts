@@ -1,12 +1,19 @@
-import { Controller, Get, VERSION_NEUTRAL } from '@nestjs/common';
+import { Request, Response, Router } from 'express';
+import { ResponseEnvelope } from '@api/response-envelope';
 import { TerminusOptionsService } from '@infrastructure/health/terminus-options.check';
 
-@Controller({ path: 'health', version: VERSION_NEUTRAL })
 export class HealthController {
-  constructor(private readonly terminusOptionsService: TerminusOptionsService) {}
+  readonly router: Router = Router();
 
-  @Get()
-  check() {
-    return this.terminusOptionsService.check();
+  constructor(
+    private readonly terminusOptionsService: TerminusOptionsService,
+    private readonly envelope: ResponseEnvelope,
+  ) {
+    this.router.get('/', this.check);
   }
+
+  private check = async (req: Request, res: Response): Promise<void> => {
+    const result = await this.terminusOptionsService.check();
+    res.status(200).json(this.envelope.wrap(result, req));
+  };
 }
